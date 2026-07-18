@@ -131,3 +131,25 @@ class AgentLandP0Tests(TestCase):
         self.assertEqual(frames[8]["evidence"]["files"], [])
         self.assertEqual(frames[9]["evidence"]["files"][0]["path"], "src/rooms.js")
         self.assertEqual(frames[-1], stored)
+
+    def test_verification_request_is_idempotent_and_records_a_real_failure(self):
+        session = self.create_session()
+        url = "/agentland/sessions/{0}/verification-request/".format(session["id"])
+        response = self.client.post(url, data='{"request":"Verify room isolation"}', content_type="application/json", headers={"Idempotency-Key": "verify-1"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["status"], "failed")
+        events = self.client.get("/agentland/sessions/{0}/events/".format(session["id"])).json()["events"]
+        self.assertEqual([event["type"] for event in events][-5:], ["task.created", "task.assigned", "test.started", "test.failed", "task.failed"])
+        duplicate = self.client.post(url, data='{"request":"Verify room isolation"}', content_type="application/json", headers={"Idempotency-Key": "verify-1"})
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(len(self.client.get("/agentland/sessions/{0}/events/".format(session["id"])).json()["events"]), len(events))
+
+    def test_verification_request_requires_key_and_can_pass(self):
+        session = self.create_session()
+        url = "/agentland/sessions/{0}/verification-request/".format(session["id"])
+        self.assertEqual(self.client.post(url, data='{"request":"Verify room isolation"}', content_type="application/json").status_code, 400)
+        target = self.workspace / "src" / "rooms.js"
+        target.write_text(target.read_text(encoding="utf-8").replace("return strokes;", "return strokes.filter((stroke) => stroke.roomId === roomId);"), encoding="utf-8")
+        response = self.client.post(url, data='{"request":"Verify room isolation"}', content_type="application/json", headers={"Idempotency-Key": "verify-pass"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["status"], "completed")
