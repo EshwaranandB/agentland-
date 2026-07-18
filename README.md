@@ -1,6 +1,5 @@
 <div align="center">
 
-<img src="assets/agentland-landing.png" alt="AgentLand" width="100%" />
 
 <br />
 
