@@ -1,0 +1,119 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentLand · {{ session.mission }}</title>
+  <style>
+    html,body,#game-container{margin:0;padding:0} body{background:#f7f7f7;color:#222;font-family:Arial,sans-serif}
+    #game-container{display:flex;justify-content:center;background:#151515;overflow:hidden} #game-container canvas{border-radius:0 0 5px 5px}
+    .agentland-shell{width:min(1100px,94vw);margin:26px auto 70px}.agentland-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .agentland-brand{font-size:23px;font-weight:800;letter-spacing:.05em}.agentland-mode{margin-left:auto;background:#212121;color:#fff;padding:7px 10px;border-radius:4px;font-size:12px;font-weight:bold}
+    .agentland-bar button{background:#fff;border:1px solid #999;border-radius:4px;padding:8px 12px;cursor:pointer;font-weight:bold}.agentland-bar button:hover{background:#efefef}
+    .agentland-status{font-size:13px;color:#555}.agentland-timeline{display:flex;align-items:center;gap:9px;margin:16px 0}.agentland-timeline input{flex:1}
+    .worker-strip{border:1px solid #555;border-radius:12px;padding:16px;display:flex;gap:16px;justify-content:space-around;flex-wrap:wrap;background:#fff}
+    .worker-card{cursor:pointer;border:0;background:#fff;padding:7px 14px;min-width:140px;border-radius:9px;text-align:left}.worker-card.selected{background:#abff84}.worker-card strong{display:block;font-size:16px}.worker-card span{font-size:12px;color:#555}
+    .detail{margin-top:20px;background:#eee;border-radius:10px;padding:20px 28px;min-height:130px}.detail h2{margin:0 0 12px}.detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 24px}.detail dt{font-weight:bold}.detail dd{margin:2px 0 0;overflow-wrap:anywhere}.activity{margin-top:20px;border-top:1px solid #aaa;padding-top:15px}.activity ol{max-height:260px;overflow:auto;padding-left:25px}.activity li{padding:3px 0;font-size:13px}.notice{font-size:13px;color:#9b2c2c;font-weight:bold}@media(max-width:650px){.detail-grid{grid-template-columns:1fr}.agentland-mode{margin-left:0}}
+  </style>
+</head>
+<body>
+  <div id="game-container" aria-label="AgentLand event-derived world"></div>
+  <main class="agentland-shell">
+    <header class="agentland-bar">
+      <div class="agentland-brand">AGENTLAND</div>
+      <div id="mission"></div>
+      <div id="execution-mode" class="agentland-mode">NOT DISPATCHED</div>
+    </header>
+    <section class="agentland-timeline" aria-label="Persisted event playback">
+      <button id="previous" type="button">◀ Previous</button><button id="play" type="button">Play</button><button id="next" type="button">Next ▶</button>
+      <output id="position"></output><input id="timeline" type="range" min="1" value="1"><span id="notice" class="notice"></span>
+    </section>
+    <section class="worker-strip" aria-label="Workers">
+      <button class="worker-card" data-role="orchestrator"><strong>Orchestrator</strong><span id="worker-orchestrator">Town Hall</span></button>
+      <button class="worker-card" data-role="builder"><strong>Builder</strong><span id="worker-builder">Town Hall</span></button>
+      <button class="worker-card" data-role="tester"><strong>Tester</strong><span id="worker-tester">Town Hall</span></button>
+    </section>
+    <section id="detail" class="detail"><h2>Worker evidence</h2><div id="detail-body">Select a worker in the world to inspect confirmed evidence.</div></section>
+    <section class="activity"><strong>Confirmed audit events</strong><ol id="feed"></ol></section>
+  </main>
+  <script id="agentland-frames" type="application/json">{{ frames_json|safe }}</script>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.js"></script>
+  <script>
+  (() => {
+    const ASSET = '{% static "al/" %}';
+    const ROLES = {orchestrator: {name: 'Orchestrator', texture: 'Ayesha_Khan'}, builder: {name: 'Builder', texture: 'Arthur_Burton'}, tester: {name: 'Tester', texture: 'Mei_Lin'}};
+    // These are tile coordinates on the copied canonical map, deliberately kept separate from persisted state.
+    const LOCATIONS = {town_hall:[75,18], code_factory:[68,24], testing_facility:[83,24], deployment_tower:[91,22]};
+    let frames = JSON.parse(document.getElementById('agentland-frames').textContent || '[]');
+    let index = Math.max(0, frames.length - 1), selected = 'builder', timer = null, world = null;
+    const $ = id => document.getElementById(id);
+    const current = () => frames[index] || {workers:[], evidence:{files:[]}, activity:[], hud:{last_sequence:0}};
+    function workerFor(role) { return current().workers.find(worker => worker.role === role); }
+    function safe(value) { return value == null || value === '' ? 'None' : String(value); }
+    function select(role) {
+      selected = role;
+      document.querySelectorAll('.worker-card').forEach(card => card.classList.toggle('selected', card.dataset.role === role));
+      const worker = workerFor(role), evidence = current().evidence || {}, files = evidence.files || [];
+      $('detail').querySelector('h2').textContent = `${ROLES[role].name} · confirmed evidence`;
+      $('detail-body').innerHTML = `<dl class="detail-grid">
+        <div><dt>Status</dt><dd>${safe(worker && worker.status)}</dd></div><div><dt>Location</dt><dd>${safe(worker && worker.location)}</dd></div>
+        <div><dt>Current task</dt><dd>${safe(worker && worker.task)}</dd></div><div><dt>Runner</dt><dd>${safe(current().hud.runner_identity)}</dd></div>
+        <div><dt>Public summary</dt><dd>${safe(worker && worker.summary)}</dd></div><div><dt>Files changed</dt><dd>${files.length ? files.map(file => safe(file.path)).join(', ') : 'None'}</dd></div>
+        <div><dt>Test result</dt><dd>${safe(evidence.test && evidence.test.status)}${evidence.test && evidence.test.exit_code != null ? ` (exit ${evidence.test.exit_code})` : ''}</dd></div>
+        <div><dt>Blocker</dt><dd>${safe(evidence.blocker && (evidence.blocker.reason || evidence.blocker.summary))}</dd></div>
+      </dl>`;
+    }
+    function render() {
+      const frame = current(), hud = frame.hud || {};
+      $('mission').textContent = frame.session ? frame.session.mission : 'Loading session…';
+      $('execution-mode').textContent = hud.execution_mode || hud.runner_identity || 'NOT DISPATCHED';
+      $('position').textContent = `Event ${frames.length ? index + 1 : 0} / ${frames.length}`;
+      $('timeline').max = Math.max(1, frames.length); $('timeline').value = Math.max(1, index + 1);
+      (frame.workers || []).forEach(worker => { const element = $('worker-' + worker.role); if (element) element.textContent = `${worker.status || 'idle'} · ${worker.location || 'Town Hall'}`; });
+      const feed = $('feed'); feed.replaceChildren(); (frame.activity || []).forEach(event => { const item = document.createElement('li'); item.textContent = `#${event.sequence} ${event.type} — ${event.summary}`; feed.appendChild(item); });
+      if (world) world.applyFrame(frame); select(selected);
+    }
+    class CanonicalAgentLandWorld extends Phaser.Scene {
+      preload() {
+        const tiles = [['blocks_1','the_ville/visuals/map_assets/blocks/blocks_1.png'],['walls','the_ville/visuals/map_assets/v1/Room_Builder_32x32.png'],['interiors_pt1','the_ville/visuals/map_assets/v1/interiors_pt1.png'],['interiors_pt2','the_ville/visuals/map_assets/v1/interiors_pt2.png'],['interiors_pt3','the_ville/visuals/map_assets/v1/interiors_pt3.png'],['interiors_pt4','the_ville/visuals/map_assets/v1/interiors_pt4.png'],['interiors_pt5','the_ville/visuals/map_assets/v1/interiors_pt5.png'],['CuteRPG_Field_B','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Field_B.png'],['CuteRPG_Field_C','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Field_C.png'],['CuteRPG_Harbor_C','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Harbor_C.png'],['CuteRPG_Village_B','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Village_B.png'],['CuteRPG_Forest_B','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Forest_B.png'],['CuteRPG_Desert_C','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Desert_C.png'],['CuteRPG_Mountains_B','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Mountains_B.png'],['CuteRPG_Desert_B','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Desert_B.png'],['CuteRPG_Forest_C','the_ville/visuals/map_assets/cute_rpg_word_VXAce/tilesets/CuteRPG_Forest_C.png']];
+        tiles.forEach(([key,path]) => this.load.image(key, ASSET + path));
+        this.load.tilemapTiledJSON('map', ASSET + 'the_ville/visuals/the_ville_jan7.json');
+        Object.values(ROLES).forEach(role => this.load.atlas(role.texture, ASSET + `characters/${role.texture}.png`, ASSET + 'characters/atlas.json'));
+      }
+      create() {
+        const map = this.make.tilemap({key:'map'});
+        const collisions = map.addTilesetImage('blocks','blocks_1'), walls = map.addTilesetImage('Room_Builder_32x32','walls');
+        const group = ['CuteRPG_Field_B','CuteRPG_Field_C','CuteRPG_Harbor_C','CuteRPG_Village_B','CuteRPG_Forest_B','CuteRPG_Desert_C','CuteRPG_Mountains_B','CuteRPG_Desert_B','CuteRPG_Forest_C','interiors_pt1','interiors_pt2','interiors_pt3','interiors_pt4','interiors_pt5'].map(name => map.addTilesetImage(name,name));
+        const all = [...group, walls];
+        ['Bottom Ground','Exterior Ground','Exterior Decoration L1','Exterior Decoration L2','Interior Ground'].forEach(name => map.createLayer(name,all,0,0));
+        map.createLayer('Wall',[map.addTilesetImage('CuteRPG_Field_C','CuteRPG_Field_C'),walls],0,0);
+        ['Interior Furniture L1','Interior Furniture L2 ','Foreground L1','Foreground L2'].forEach(name => map.createLayer(name,all,0,0));
+        const collisionLayer = map.createLayer('Collisions',collisions,0,0); collisionLayer.setCollisionByProperty({collide:true}); collisionLayer.setDepth(-1);
+        this.cameraProxy = this.physics.add.sprite(2400,588,'Ayesha_Khan','down').setVisible(false); this.cameras.main.startFollow(this.cameraProxy); this.cameras.main.setBounds(0,0,map.widthInPixels,map.heightInPixels); this.cameras.main.setZoom(.8); this.cursors=this.input.keyboard.createCursorKeys();
+        this.sprites = {}; Object.entries(ROLES).forEach(([role, info], position) => {
+          const [tx,ty] = LOCATIONS.town_hall, sprite = this.physics.add.sprite(tx*32+16+position*18,ty*32+32,info.texture,'down').setSize(30,40).setOffset(0,0).setInteractive().setDepth(3);
+          sprite.displayWidth=40; sprite.scaleY=sprite.scaleX; sprite.on('pointerdown',() => { this.cameraProxy.setPosition(sprite.x,sprite.y); select(role); }); this.sprites[role]=sprite;
+          ['left','right','up','down'].forEach(direction => this.anims.create({key:`${role}-${direction}`,frames:this.anims.generateFrameNames(info.texture,{prefix:`${direction}-walk.`,start:0,end:3,zeroPad:3}),frameRate:5,repeat:-1}));
+        });
+        this.buildingLabels = {}; Object.entries(LOCATIONS).forEach(([building,[tileX,tileY]]) => {
+          const label = building.replace('_',' ').replace(/\b\w/g, character => character.toUpperCase());
+          this.buildingLabels[building] = this.add.text(tileX*32+16,tileY*32-12,label,{font:'bold 13px Arial',fill:'#ffffff',backgroundColor:'#202020',padding:{x:5,y:3}}).setOrigin(.5).setDepth(4);
+        });
+        world=this; render();
+      }
+      update() { const velocity=400; this.cameraProxy.body.setVelocity(0); if(this.cursors.left.isDown)this.cameraProxy.body.setVelocityX(-velocity); if(this.cursors.right.isDown)this.cameraProxy.body.setVelocityX(velocity); if(this.cursors.up.isDown)this.cameraProxy.body.setVelocityY(-velocity); if(this.cursors.down.isDown)this.cameraProxy.body.setVelocityY(velocity); }
+      applyFrame(frame) {
+        Object.entries(this.buildingLabels || {}).forEach(([building,label]) => { const state=(frame.buildings || {})[building] || {}; label.setBackgroundColor(state.status === 'blocked' || state.status === 'failed' ? '#9f1c1c' : state.status === 'completed' ? '#27652b' : state.status === 'active' ? '#8a5a00' : '#202020'); });
+        (frame.workers || []).forEach(worker => { const sprite=this.sprites[worker.role], point=LOCATIONS[worker.location] || LOCATIONS.town_hall; if(!sprite)return; const x=point[0]*32+16,y=point[1]*32+32,dx=x-sprite.x,dy=y-sprite.y, direction=Math.abs(dx)>Math.abs(dy)?(dx>=0?'right':'left'):(dy>=0?'down':'up'); sprite.anims.play(`${worker.role}-${direction}`,true); this.tweens.killTweensOf(sprite); this.tweens.add({targets:sprite,x,y,duration:420,ease:'Linear',onComplete:()=>{sprite.anims.stop();sprite.setTexture(ROLES[worker.role].texture,direction)}}); sprite.clearTint(); if(['blocked','failed'].includes(worker.status))sprite.setTint(0xff7777); else if(worker.status==='completed')sprite.setTint(0x9dff9d); });
+      }
+    }
+    new Phaser.Game({type:Phaser.AUTO,width:1500,height:800,parent:'game-container',pixelArt:true,physics:{default:'arcade',arcade:{gravity:{y:0},debug:false}},scene:CanonicalAgentLandWorld,scale:{zoom:.8}});
+    document.querySelectorAll('.worker-card').forEach(card => card.addEventListener('click',() => select(card.dataset.role)));
+    $('previous').onclick=()=>{index=Math.max(0,index-1);render()}; $('next').onclick=()=>{index=Math.min(Math.max(0,frames.length-1),index+1);render()}; $('timeline').oninput=event=>{index=Number(event.target.value)-1;render()};
+    $('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;$('play').textContent='Play';return;} $('play').textContent='Pause';timer=setInterval(()=>{if(index>=frames.length-1){clearInterval(timer);timer=null;$('play').textContent='Play';return;}index++;render();},700)};
+    setInterval(async()=>{try{const wasLive=index===frames.length-1,response=await fetch(`/agentland/sessions/${frames[0].session.id}/city-state/`);if(!response.ok)return;const data=await response.json();if(data.frames.length>frames.length){frames=data.frames;if(wasLive){index=frames.length-1;render()}else $('notice').textContent=`${frames.length-index-1} new confirmed events`;}}catch(_error){}},750);
+  })();
+  </script>
+</body>
+</html>

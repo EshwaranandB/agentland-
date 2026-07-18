@@ -4,8 +4,10 @@ from datetime import timedelta
 
 from django.http import HttpResponse, JsonResponse
 from django.db import IntegrityError, transaction
+from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 
 from .eventing import append_event
 from .models import Artifact, ProjectSession, Task, VerificationRequest, ViewerPresence, Worker
@@ -24,7 +26,15 @@ def request_body(request):
 
 @require_GET
 def shell(request):
-    return demo_shell()
+    return render(request, "agentland/shell.html")
+
+
+@require_GET
+def workspace(request, session_id):
+    session = ProjectSession.objects.filter(id=session_id).first()
+    if not session:
+        return JsonResponse({"error": "session not found"}, status=404)
+    return render(request, "agentland/workspace.html", {"session": serialize_session(session)})
 
 
 @require_http_methods(["GET", "POST"])
@@ -86,11 +96,12 @@ def events(request, session_id):
 
 
 @require_GET
+@xframe_options_sameorigin
 def city(request, session_id):
     session = ProjectSession.objects.filter(id=session_id).first()
     if not session:
         return JsonResponse({"error": "session not found"}, status=404)
-    return city_page(session)
+    return city_page(request, session)
 
 
 @require_GET

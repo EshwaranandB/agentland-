@@ -5,6 +5,7 @@ from . import views
 urlpatterns = [
     path("", views.shell),
     path("sessions/", views.create_session),
+    path("sessions/<uuid:session_id>/", views.workspace),
     path("reset-baseline/", views.reset_baseline),
     path("sessions/<uuid:session_id>/dispatch-builder/", views.dispatch_builder_view),
     path("sessions/<uuid:session_id>/snapshot/", views.snapshot),
